@@ -1007,6 +1007,14 @@ impl RTCPeerConnection {
             }
         }
 
+        // JSEP 5.8.3: continuing a DTLS connection also continues its role,
+        // including when the ICE restart changes which peer is the offerer.
+        let role = self.dtls_transport().role();
+        if self.current_local_description.is_some()
+            && matches!(role, RTCDtlsRole::Client | RTCDtlsRole::Server)
+        {
+            connection_role = role.to_connection_role();
+        }
         let mut d = self.generate_matched_sdp(
             false, /*includeUnmatched */
             connection_role,
