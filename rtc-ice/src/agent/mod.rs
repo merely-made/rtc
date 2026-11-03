@@ -151,6 +151,10 @@ pub struct Agent {
     pub(crate) candidate_pairs: Vec<CandidatePair>,
     pub(crate) nominated_pair: Option<usize>,
     pub(crate) selected_pair: Option<usize>,
+    // A restart keeps the nominated data path while checking a new generation.
+    // It is never part of the new generation's candidate or transaction lists.
+    previous_pair: Option<(Candidate, Candidate)>,
+    previous_pair_deadline: Option<Instant>,
 
     // LRU of outbound Binding request Transaction IDs
     pub(crate) pending_binding_requests: Vec<BindingRequest>,
@@ -268,6 +272,8 @@ impl Agent {
 
             nominated_pair: None,
             selected_pair: None,
+            previous_pair: None,
+            previous_pair_deadline: None,
             candidate_pairs: vec![],
 
             connection_state: ConnectionState::New,
@@ -576,6 +582,16 @@ impl Agent {
     ///
     /// Guards against accepting media from an address that has not passed a connectivity check.
     pub fn is_valid_non_stun_traffic(&mut self, now: Instant, transport: TransportContext) -> bool {
+        if let Some((local, remote)) = &self.previous_pair
+            && self
+                .previous_pair_deadline
+                .is_some_and(|deadline| now < deadline)
+            && transport.local_addr == local.base_addr()
+            && transport.peer_addr == remote.addr()
+            && transport.transport_protocol == local.network_type().to_protocol()
+        {
+            return true;
+        }
         self.find_local_candidate(transport.local_addr, transport.transport_protocol)
             .is_some()
             && self.validate_non_stun_traffic(now, transport.peer_addr)
@@ -612,7 +628,8 @@ impl Agent {
         interval
     }
 
-    /// Returns the selected pair (local_candidate, remote_candidate) or none
+    /// Returns the active data path, retaining the previous nominated pair
+    /// during an ICE restart until a replacement succeeds or its deadline expires.
     pub fn get_selected_candidate_pair(&self) -> Option<(&Candidate, &Candidate)> {
         if let Some(pair_index) = self.get_selected_pair() {
             let candidate_pair = &self.candidate_pairs[pair_index];
@@ -621,7 +638,9 @@ impl Agent {
                 &self.remote_candidates[candidate_pair.remote_index],
             ))
         } else {
-            None
+            self.previous_pair
+                .as_ref()
+                .map(|(local, remote)| (local, remote))
         }
     }
 
@@ -708,17 +727,41 @@ impl Agent {
     /// pair, and restarts the agent's timers. With nothing staged, the current credentials are
     /// kept and only the session is restarted.
     pub fn apply_restart(&mut self, now: Instant, keep_local_candidates: bool) -> Result<()> {
+        let previous = keep_local_candidates
+            .then(|| {
+                self.get_selected_candidate_pair()
+                    .map(|(l, r)| (l.clone(), r.clone()))
+            })
+            .flatten();
+        // Never extend a retained path by repeatedly restarting. The existing
+        // failure budget bounds it, capped at one consent-freshness interval.
+        let budget = self
+            .disconnected_timeout
+            .saturating_add(self.failed_timeout);
+        let budget = if budget.is_zero() {
+            Duration::from_secs(30)
+        } else {
+            budget.min(Duration::from_secs(30))
+        };
+        let previous_deadline = if self.selected_pair.is_some() {
+            now.checked_add(budget)
+        } else {
+            self.previous_pair_deadline
+        };
         if let Some(credentials) = self.ufrag_pwd.pending_local_credentials.take() {
             self.ufrag_pwd.local_credentials = credentials;
         }
         self.ufrag_pwd.remote_credentials = None;
 
         self.pending_binding_requests = vec![];
+        self.write_outs.clear();
 
         self.candidate_pairs = vec![];
 
         self.set_selected_pair(Some(now), None);
         self.delete_all_candidates(keep_local_candidates);
+        self.previous_pair = previous;
+        self.previous_pair_deadline = previous_deadline.filter(|_| self.previous_pair.is_some());
         self.start(now);
 
         // Restart is used by NewAgent. Accept/Connect should be used to move to checking
@@ -823,6 +866,8 @@ impl Agent {
 
     pub(crate) fn set_selected_pair(&mut self, now: Option<Instant>, selected_pair: Option<usize>) {
         if let Some(pair_index) = selected_pair {
+            self.previous_pair = None;
+            self.previous_pair_deadline = None;
             trace!(
                 "[{}]: Set selected candidate pair: {:?}",
                 self.get_name(),
@@ -999,6 +1044,8 @@ impl Agent {
     ///
     /// This is used for restarts, failures and on close.
     pub(crate) fn delete_all_candidates(&mut self, keep_local_candidates: bool) {
+        self.previous_pair = None;
+        self.previous_pair_deadline = None;
         if !keep_local_candidates {
             self.local_candidates.clear();
         }

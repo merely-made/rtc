@@ -89,6 +89,13 @@ impl sansio::Protocol<TaggedBytesMut, (), ()> for Agent {
     }
 
     fn handle_timeout(&mut self, now: Self::Time) -> std::result::Result<(), Self::Error> {
+        if self
+            .previous_pair_deadline
+            .is_some_and(|deadline| now >= deadline)
+        {
+            self.previous_pair = None;
+            self.previous_pair_deadline = None;
+        }
         let remote_candidates = if let Some(mdns_conn) = &mut self.mdns {
             let _ = mdns_conn.handle_timeout(now);
 
@@ -157,7 +164,10 @@ impl sansio::Protocol<TaggedBytesMut, (), ()> for Agent {
         };
 
         // This treats the two options as a collection and picks the minimum
-        [mdns_timeout, ice_timeout].into_iter().flatten().min()
+        [mdns_timeout, ice_timeout, self.previous_pair_deadline]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     fn close(&mut self) -> std::result::Result<(), Self::Error> {

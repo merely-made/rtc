@@ -3236,6 +3236,55 @@ fn test_staged_ice_restart_keeps_live_session_authenticating() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn applied_restart_retains_only_the_bounded_previously_nominated_path() -> Result<()> {
+    for keep in [true, false] {
+        let now = Instant::now();
+        let mut agent = Agent::new(
+            now,
+            Arc::new(AgentConfig::default()),
+            test_crypto_provider(),
+        )?;
+        let candidate = |port| {
+            CandidateHostConfig {
+                base_config: CandidateConfig {
+                    network: "udp".into(),
+                    address: "127.0.0.1".into(),
+                    port,
+                    component: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+            .new_candidate_host()
+        };
+        agent.add_local_candidate(candidate(41000)?)?;
+        agent.add_remote_candidate(candidate(41001)?)?;
+        agent.add_pair(0, 0);
+        agent.set_selected_pair(Some(now), Some(0));
+        agent.generate_restart_credentials(String::new(), String::new())?;
+        agent.apply_restart(now, keep)?;
+        assert!(agent.remote_candidates.is_empty());
+        assert!(agent.candidate_pairs.is_empty());
+        assert!(agent.pending_binding_requests.is_empty());
+        assert_eq!(agent.get_selected_candidate_pair().is_some(), keep);
+        if keep {
+            assert_eq!(
+                agent.get_selected_candidate_pair().unwrap().1.addr().port(),
+                41001
+            );
+            let deadline = agent.previous_pair_deadline.unwrap();
+            agent.apply_restart(now + Duration::from_millis(1), true)?;
+            assert_eq!(agent.previous_pair_deadline, Some(deadline));
+            agent.handle_timeout(deadline)?;
+            assert!(agent.get_selected_candidate_pair().is_none());
+        }
+        agent.close()?;
+        assert!(agent.get_selected_candidate_pair().is_none());
+    }
+    Ok(())
+}
+
 /// Agent events carry the instant their condition was observed at, so a consumer draining
 /// `poll_event` is *told* the time rather than having to retain one and guess. `close` has no
 /// caller-supplied instant, so it stamps with the newest one the agent was given.
