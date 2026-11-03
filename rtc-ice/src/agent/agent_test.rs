@@ -3285,6 +3285,116 @@ fn applied_restart_retains_only_the_bounded_previously_nominated_path() -> Resul
     Ok(())
 }
 
+#[test]
+fn restart_answers_old_consent_only_on_the_retained_route_without_refreshing_it() -> Result<()> {
+    let now = Instant::now();
+    let mut agent = Agent::new(
+        now,
+        Arc::new(AgentConfig::default()),
+        test_crypto_provider(),
+    )?;
+    let candidate = |port| {
+        CandidateHostConfig {
+            base_config: CandidateConfig {
+                network: "udp".into(),
+                address: "127.0.0.1".into(),
+                port,
+                component: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+        .new_candidate_host()
+    };
+    agent.add_local_candidate(candidate(41000)?)?;
+    agent.add_remote_candidate(candidate(41001)?)?;
+    agent.set_remote_credentials("oldRemote".into(), "oldRemotePassword".into())?;
+    agent.add_pair(0, 0);
+    agent.set_selected_pair(Some(now), Some(0));
+    let old = agent.ufrag_pwd.local_credentials.clone();
+    agent.generate_restart_credentials(String::new(), String::new())?;
+    agent.apply_restart(now, true)?;
+    let deadline = agent.previous_pair_deadline.unwrap();
+    let request = |password: &str| -> Result<Message> {
+        let mut message = Message::new();
+        message.build(&[
+            Box::new(BINDING_REQUEST),
+            Box::new(TransactionId::new()),
+            Box::new(Username::new(
+                ATTR_USERNAME,
+                format!("{}:oldRemote", old.ufrag),
+            )),
+            Box::new(MessageIntegrity::new_short_term_integrity_with_provider(
+                password.to_owned(),
+                test_crypto_provider().crypto(),
+            )),
+            Box::new(FINGERPRINT),
+        ])?;
+        Ok(message)
+    };
+    let remote = "127.0.0.1:41001".parse().unwrap();
+    assert!(
+        agent
+            .handle_inbound(now, &mut request("wrongPassword")?, 0, remote)
+            .is_err()
+    );
+    assert!(
+        agent
+            .handle_inbound(
+                now,
+                &mut request(&old.pwd)?,
+                0,
+                "127.0.0.1:41002".parse().unwrap()
+            )
+            .is_err()
+    );
+    assert!(agent.poll_write().is_none());
+    let mut message = request(&old.pwd)?;
+    agent.handle_inbound(now, &mut message, 0, remote)?;
+    let output = agent
+        .poll_write()
+        .expect("old consent receives an authenticated response");
+    assert_eq!(output.transport.peer_addr, remote);
+    let mut response = Message {
+        raw: output.message.to_vec(),
+        ..Default::default()
+    };
+    response.decode()?;
+    assert_eq!(response.typ, BINDING_SUCCESS);
+    assert_eq!(response.transaction_id, message.transaction_id);
+    assert_inbound_message_integrity(
+        &mut response,
+        old.pwd.as_bytes(),
+        test_crypto_provider().crypto(),
+    )?;
+    assert!(agent.remote_candidates.is_empty());
+    assert!(agent.candidate_pairs.is_empty());
+    assert!(agent.pending_binding_requests.is_empty());
+    assert_eq!(agent.previous_pair_deadline, Some(deadline));
+    agent.apply_restart(now + Duration::from_millis(1), true)?;
+    agent.handle_inbound(
+        now + Duration::from_millis(2),
+        &mut request(&old.pwd)?,
+        0,
+        remote,
+    )?;
+    assert!(agent.poll_write().is_some());
+    assert_eq!(agent.previous_pair_deadline, Some(deadline));
+    assert!(
+        agent
+            .handle_inbound(deadline, &mut request(&old.pwd)?, 0, remote)
+            .is_err()
+    );
+    assert!(agent.poll_write().is_none());
+    agent.close()?;
+    assert!(
+        agent
+            .handle_inbound(now, &mut request(&old.pwd)?, 0, remote)
+            .is_err()
+    );
+    Ok(())
+}
+
 /// Agent events carry the instant their condition was observed at, so a consumer draining
 /// `poll_event` is *told* the time rather than having to retain one and guess. `close` has no
 /// caller-supplied instant, so it stamps with the newest one the agent was given.

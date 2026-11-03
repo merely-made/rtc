@@ -95,6 +95,7 @@ impl sansio::Protocol<TaggedBytesMut, (), ()> for Agent {
         {
             self.previous_pair = None;
             self.previous_pair_deadline = None;
+            self.previous_credentials = None;
         }
         let remote_candidates = if let Some(mdns_conn) = &mut self.mdns {
             let _ = mdns_conn.handle_timeout(now);

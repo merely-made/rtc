@@ -14,6 +14,7 @@ mod agent_test;
 /// Configuration for a new [`Agent`]: servers, timeouts and role.
 pub mod agent_config;
 mod agent_proto;
+mod agent_restart;
 /// Pair selection and nomination — which candidate pair becomes the selected one.
 pub mod agent_selector;
 /// Snapshot statistics for an agent's candidates and pairs.
@@ -155,6 +156,7 @@ pub struct Agent {
     // It is never part of the new generation's candidate or transaction lists.
     previous_pair: Option<(Candidate, Candidate)>,
     previous_pair_deadline: Option<Instant>,
+    previous_credentials: Option<(Credentials, Credentials)>,
 
     // LRU of outbound Binding request Transaction IDs
     pub(crate) pending_binding_requests: Vec<BindingRequest>,
@@ -274,6 +276,7 @@ impl Agent {
             selected_pair: None,
             previous_pair: None,
             previous_pair_deadline: None,
+            previous_credentials: None,
             candidate_pairs: vec![],
 
             connection_state: ConnectionState::New,
@@ -748,6 +751,14 @@ impl Agent {
         } else {
             self.previous_pair_deadline
         };
+        let previous_credentials = if self.selected_pair.is_some() {
+            self.ufrag_pwd
+                .remote_credentials
+                .as_ref()
+                .map(|remote| (self.ufrag_pwd.local_credentials.clone(), remote.clone()))
+        } else {
+            self.previous_credentials.clone()
+        };
         if let Some(credentials) = self.ufrag_pwd.pending_local_credentials.take() {
             self.ufrag_pwd.local_credentials = credentials;
         }
@@ -762,6 +773,7 @@ impl Agent {
         self.delete_all_candidates(keep_local_candidates);
         self.previous_pair = previous;
         self.previous_pair_deadline = previous_deadline.filter(|_| self.previous_pair.is_some());
+        self.previous_credentials = previous_credentials.filter(|_| self.previous_pair.is_some());
         self.start(now);
 
         // Restart is used by NewAgent. Accept/Connect should be used to move to checking
@@ -868,6 +880,7 @@ impl Agent {
         if let Some(pair_index) = selected_pair {
             self.previous_pair = None;
             self.previous_pair_deadline = None;
+            self.previous_credentials = None;
             trace!(
                 "[{}]: Set selected candidate pair: {:?}",
                 self.get_name(),
@@ -1046,6 +1059,7 @@ impl Agent {
     pub(crate) fn delete_all_candidates(&mut self, keep_local_candidates: bool) {
         self.previous_pair = None;
         self.previous_pair_deadline = None;
+        self.previous_credentials = None;
         if !keep_local_candidates {
             self.local_candidates.clear();
         }
@@ -1305,6 +1319,9 @@ impl Agent {
         local_index: usize,
         remote_addr: SocketAddr,
     ) -> Result<()> {
+        if self.handle_retained_binding(now, m, local_index, remote_addr)? {
+            return Ok(());
+        }
         if m.typ.method != METHOD_BINDING
             || !(m.typ.class == CLASS_SUCCESS_RESPONSE
                 || m.typ.class == CLASS_REQUEST
