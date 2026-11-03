@@ -1011,17 +1011,26 @@ impl RTCPeerConnection {
         // including when the ICE restart changes which peer is the offerer.
         let role = self.dtls_transport().role();
         let identity = |description: &RTCSessionDescription| {
-            description.sdp.lines().filter_map(|line| {
-                if line.starts_with("a=fingerprint:") { Some(line.to_ascii_lowercase()) }
-                else if line.starts_with("a=tls-id:") { Some(line.to_owned()) }
-                else { None }
-            }).collect::<std::collections::BTreeSet<_>>()
+            description
+                .sdp
+                .lines()
+                .filter_map(|line| {
+                    if line.starts_with("a=fingerprint:") {
+                        Some(line.to_ascii_lowercase())
+                    } else if line.starts_with("a=tls-id:") {
+                        Some(line.to_owned())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<std::collections::BTreeSet<_>>()
         };
-        let continuing = self.current_remote_description.as_ref().zip(self.remote_description())
+        let continuing = self
+            .current_remote_description
+            .as_ref()
+            .zip(self.remote_description())
             .is_some_and(|(current, pending)| identity(current) == identity(pending));
-        if continuing
-            && matches!(role, RTCDtlsRole::Client | RTCDtlsRole::Server)
-        {
+        if continuing && matches!(role, RTCDtlsRole::Client | RTCDtlsRole::Server) {
             connection_role = role.to_connection_role();
         }
         let mut d = self.generate_matched_sdp(
