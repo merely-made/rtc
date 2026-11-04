@@ -160,3 +160,111 @@ fn restart_rechecks_the_resolved_endpoint_without_reinterpreting_its_name() {
         SocketAddr::new(ip, 50000)
     );
 }
+
+#[test]
+fn fresh_nomination_keeps_only_bounded_old_consent_until_mutual_credentials() {
+    for acknowledge in [false, true] {
+        let now = Instant::now();
+        let provider = crypto::default_provider().unwrap();
+        let mut agent =
+            Agent::new(now, Arc::new(AgentConfig::default()), provider.clone()).unwrap();
+        agent.add_local_candidate(host("127.0.0.1", 40000)).unwrap();
+        agent
+            .add_remote_candidate(host("127.0.0.1", 50000))
+            .unwrap();
+        agent
+            .set_remote_credentials("oldRemote".into(), "oldRemotePassword".into())
+            .unwrap();
+        agent.candidate_pairs[0].state = CandidatePairState::Succeeded;
+        agent.set_selected_pair(Some(now), Some(0));
+        let old = agent.ufrag_pwd.local_credentials.clone();
+        agent
+            .generate_restart_credentials(String::new(), String::new())
+            .unwrap();
+        agent.apply_restart(now, true).unwrap();
+        let deadline = agent.previous_pair_deadline.unwrap();
+        agent
+            .set_remote_credentials("newRemote".into(), "newRemotePassword".into())
+            .unwrap();
+        agent
+            .add_remote_candidate(host("127.0.0.1", 50001))
+            .unwrap();
+        agent.candidate_pairs[1].state = CandidatePairState::Succeeded;
+        agent.set_selected_pair(Some(now), Some(1));
+        assert!(
+            agent.previous_pair.is_none(),
+            "the old data path is retired"
+        );
+        assert_eq!(
+            agent.get_selected_candidate_pair().unwrap().1.addr().port(),
+            50001
+        );
+        assert_eq!(agent.retired_consent.as_ref().unwrap().deadline, deadline);
+        let request = |username: String, password: &str| {
+            let mut message = Message::new();
+            message
+                .build(&[
+                    Box::new(BINDING_REQUEST),
+                    Box::new(TransactionId::new()),
+                    Box::new(Username::new(ATTR_USERNAME, username)),
+                    Box::new(MessageIntegrity::new_short_term_integrity_with_provider(
+                        password.to_owned(),
+                        provider.crypto(),
+                    )),
+                    Box::new(FINGERPRINT),
+                ])
+                .unwrap();
+            message
+        };
+        let old_route = "127.0.0.1:50000".parse().unwrap();
+        let old_username = format!("{}:oldRemote", old.ufrag);
+        agent
+            .handle_inbound(
+                now,
+                &mut request(old_username.clone(), &old.pwd),
+                0,
+                old_route,
+            )
+            .unwrap();
+        assert_eq!(agent.poll_write().unwrap().transport.peer_addr, old_route);
+        assert_eq!(agent.candidate_pairs.len(), 2);
+        assert_eq!(
+            agent.get_selected_candidate_pair().unwrap().1.addr().port(),
+            50001
+        );
+        if acknowledge {
+            let username = format!("{}:newRemote", agent.ufrag_pwd.local_credentials.ufrag);
+            let password = agent.ufrag_pwd.local_credentials.pwd.clone();
+            let fresh_route = "127.0.0.1:50001".parse().unwrap();
+            assert!(
+                agent
+                    .handle_inbound(
+                        now,
+                        &mut request(username.clone(), "wrongPassword"),
+                        0,
+                        fresh_route
+                    )
+                    .is_err()
+            );
+            assert!(agent.retired_consent.is_some());
+            agent
+                .handle_inbound(now, &mut request(username, &password), 0, fresh_route)
+                .unwrap();
+            assert!(agent.retired_consent.is_none());
+            while agent.poll_write().is_some() {}
+            assert!(
+                agent
+                    .handle_inbound(now, &mut request(old_username, &old.pwd), 0, old_route)
+                    .is_err()
+            );
+        } else {
+            assert!(
+                agent
+                    .handle_inbound(deadline, &mut request(old_username, &old.pwd), 0, old_route)
+                    .is_err()
+            );
+            agent.handle_timeout(deadline).unwrap();
+            assert!(agent.retired_consent.is_none());
+        }
+    }
+}

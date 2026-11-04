@@ -1,5 +1,13 @@
 use super::*;
 
+pub(super) struct RetainedConsent {
+    pub local: Candidate,
+    pub remote: Candidate,
+    pub credentials: Credentials,
+    pub remote_credentials: Credentials,
+    pub deadline: Instant,
+}
+
 impl Agent {
     // A restart may have installed new credentials before its answer arrives.
     // Respond to consent on the old nominated route without inserting old
@@ -11,15 +19,29 @@ impl Agent {
         local_index: usize,
         remote_addr: SocketAddr,
     ) -> Result<bool> {
-        let (Some((local, remote)), Some((credentials, remote_credentials))) =
-            (&self.previous_pair, &self.previous_credentials)
-        else {
+        let retained = match (
+            &self.previous_pair,
+            &self.previous_credentials,
+            self.previous_pair_deadline,
+        ) {
+            (Some((local, remote)), Some((credentials, remote_credentials)), Some(deadline)) => {
+                Some((local, remote, credentials, remote_credentials, deadline))
+            }
+            _ => self.retired_consent.as_ref().map(|c| {
+                (
+                    &c.local,
+                    &c.remote,
+                    &c.credentials,
+                    &c.remote_credentials,
+                    c.deadline,
+                )
+            }),
+        };
+        let Some((local, remote, credentials, remote_credentials, deadline)) = retained else {
             return Ok(false);
         };
         if message.typ != BINDING_REQUEST
-            || !self
-                .previous_pair_deadline
-                .is_some_and(|deadline| now < deadline)
+            || now >= deadline
             || remote_addr != remote.addr()
             || self
                 .local_candidates

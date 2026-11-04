@@ -159,6 +159,7 @@ pub struct Agent {
     previous_pair: Option<(Candidate, Candidate)>,
     previous_pair_deadline: Option<Instant>,
     previous_credentials: Option<(Credentials, Credentials)>,
+    retired_consent: Option<agent_restart::RetainedConsent>,
 
     // LRU of outbound Binding request Transaction IDs
     pub(crate) pending_binding_requests: Vec<BindingRequest>,
@@ -279,6 +280,7 @@ impl Agent {
             previous_pair: None,
             previous_pair_deadline: None,
             previous_credentials: None,
+            retired_consent: None,
             candidate_pairs: vec![],
 
             connection_state: ConnectionState::New,
@@ -908,9 +910,26 @@ impl Agent {
 
     pub(crate) fn set_selected_pair(&mut self, now: Option<Instant>, selected_pair: Option<usize>) {
         if let Some(pair_index) = selected_pair {
-            self.previous_pair = None;
-            self.previous_pair_deadline = None;
-            self.previous_credentials = None;
+            // A success response proves the remote's consent, but not that it
+            // has received our new credentials. Keep only the old consent
+            // responder until a fresh authenticated request or its old deadline.
+            if let (
+                Some((local, remote)),
+                Some((credentials, remote_credentials)),
+                Some(deadline),
+            ) = (
+                self.previous_pair.take(),
+                self.previous_credentials.take(),
+                self.previous_pair_deadline.take(),
+            ) {
+                self.retired_consent = Some(agent_restart::RetainedConsent {
+                    local,
+                    remote,
+                    credentials,
+                    remote_credentials,
+                    deadline,
+                });
+            }
             trace!(
                 "[{}]: Set selected candidate pair: {:?}",
                 self.get_name(),
@@ -1095,6 +1114,7 @@ impl Agent {
         self.previous_pair = None;
         self.previous_pair_deadline = None;
         self.previous_credentials = None;
+        self.retired_consent = None;
         if !keep_local_candidates {
             self.local_candidates.clear();
         }
@@ -1581,6 +1601,11 @@ impl Agent {
 
             if let Some(remote_index) = &remote_candidate_index {
                 self.handle_binding_request(now, m, local_index, *remote_index);
+            }
+            if self.selected_pair.is_some() {
+                // Unlike a response to our check, this request authenticated
+                // with our new password proves the peer received the answer.
+                self.retired_consent = None;
             }
         }
 

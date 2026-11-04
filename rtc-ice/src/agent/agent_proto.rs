@@ -90,6 +90,13 @@ impl sansio::Protocol<TaggedBytesMut, (), ()> for Agent {
 
     fn handle_timeout(&mut self, now: Self::Time) -> std::result::Result<(), Self::Error> {
         if self
+            .retired_consent
+            .as_ref()
+            .is_some_and(|c| now >= c.deadline)
+        {
+            self.retired_consent = None;
+        }
+        if self
             .previous_pair_deadline
             .is_some_and(|deadline| now >= deadline)
         {
