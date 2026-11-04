@@ -65,6 +65,19 @@ fn host_resolution_preserves_names_and_excludes_relay_pairs_in_both_orders() {
             SocketAddr::new(ip, 50000)
         );
         assert_eq!(agent.candidate_pairs.len(), 1, "only local host may pair");
+        agent.add_pair(1, 0);
+        assert_eq!(
+            agent.candidate_pairs.len(),
+            1,
+            "triggered path cannot bypass the pairing rule"
+        );
+        let message = Message::new();
+        agent.send_binding_success(Instant::now(), &message, 1, 0);
+        agent.send_binding_request(Instant::now(), &message, 1, 0);
+        assert!(
+            agent.write_outs.is_empty(),
+            "neither checks nor replies disclose an mDNS endpoint through TURN"
+        );
         assert!(agent.mdns_queries.is_empty());
         assert!(agent.mdns.is_none());
     }

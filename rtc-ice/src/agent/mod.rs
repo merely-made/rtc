@@ -984,6 +984,11 @@ impl Agent {
     }
 
     pub(crate) fn add_pair(&mut self, local_index: usize, remote_index: usize) {
+        // Triggered checks also call this directly, outside candidate insertion.
+        if !self.local_candidates[local_index].can_pair_with(&self.remote_candidates[remote_index])
+        {
+            return;
+        }
         let p = CandidatePair::new(
             local_index,
             remote_index,
@@ -1148,6 +1153,10 @@ impl Agent {
         local_index: usize,
         remote_index: usize,
     ) {
+        if !self.local_candidates[local_index].can_pair_with(&self.remote_candidates[remote_index])
+        {
+            return;
+        }
         trace!(
             "[{}]: ping STUN from {} to {}",
             self.get_name(),
@@ -1179,6 +1188,10 @@ impl Agent {
         local_index: usize,
         remote_index: usize,
     ) {
+        if !self.local_candidates[local_index].can_pair_with(&self.remote_candidates[remote_index])
+        {
+            return;
+        }
         let addr = self.remote_candidates[remote_index].addr();
         let (ip, port) = (addr.ip(), addr.port());
         let local_pwd = self.ufrag_pwd.local_credentials.pwd.clone();
