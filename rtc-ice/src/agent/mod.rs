@@ -10,6 +10,8 @@
 //! two must not agree — see [`Credentials`] and [`Agent::set_role`].
 #[cfg(test)]
 mod agent_test;
+#[cfg(test)]
+mod resolved_test;
 
 /// Configuration for a new [`Agent`]: servers, timeouts and role.
 pub mod agent_config;
@@ -457,6 +459,24 @@ impl Agent {
 
     /// Adds a new remote candidate.
     pub fn add_remote_candidate(&mut self, c: Candidate) -> Result<bool> {
+        self.add_remote_candidate_inner(c, false)
+    }
+
+    /// Insert a host-resolved mDNS candidate, preserving its signaled name and ID.
+    /// The caller owns resolution, interface policy, deadlines and cancellation.
+    pub fn add_resolved_remote_candidate(&mut self, mut c: Candidate, ip: IpAddr) -> Result<bool> {
+        if c.candidate_type() != CandidateType::Host
+            || !c.address().ends_with(".local")
+            || ip.is_unspecified()
+            || ip.is_multicast()
+        {
+            return Err(Error::ErrAddressParseFailed);
+        }
+        c.set_ip(&ip)?;
+        self.add_remote_candidate_inner(c, true)
+    }
+
+    fn add_remote_candidate_inner(&mut self, c: Candidate, resolved: bool) -> Result<bool> {
         // Filter by network type if network_types is configured
         if !self.network_types.is_empty() {
             let candidate_network_type = c.network_type();
@@ -481,7 +501,8 @@ impl Agent {
         }
 
         // If we have a mDNS Candidate lets fully resolve it before adding it locally
-        if c.candidate_type() == CandidateType::Host && c.address().ends_with(".local") {
+        if !resolved && c.candidate_type() == CandidateType::Host && c.address().ends_with(".local")
+        {
             if self.mdns_mode == MulticastDnsMode::Disabled {
                 warn!(
                     "remote mDNS candidate added, but mDNS is disabled: ({})",

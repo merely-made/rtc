@@ -187,6 +187,15 @@ impl IceTransport {
         Ok(())
     }
 
+    pub(crate) fn add_resolved_remote_candidate(
+        &mut self,
+        c: Candidate,
+        address: std::net::IpAddr,
+    ) -> Result<()> {
+        self.agent.add_resolved_remote_candidate(c, address)?;
+        Ok(())
+    }
+
     pub(crate) fn add_local_candidate(&mut self, c: Candidate) -> Result<bool> {
         self.agent.add_local_candidate(c)
     }

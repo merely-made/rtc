@@ -439,6 +439,13 @@ impl Candidate {
     /// and have compatible TCP types (RFC 6544). UDP candidates use
     /// `TcpType::Unspecified`.
     pub(crate) fn can_pair_with(&self, other: &Candidate) -> bool {
+        // `self` is local. Never disclose a resolved remote mDNS endpoint to
+        // our TURN server. The converse (local host, remote relay) is allowed.
+        if self.candidate_type() == CandidateType::Relay
+            && other.address().to_ascii_lowercase().ends_with(".local")
+        {
+            return false;
+        }
         if self.network_type() != other.network_type() {
             return false;
         }

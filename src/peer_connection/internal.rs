@@ -1347,17 +1347,26 @@ impl RTCPeerConnection {
     pub(super) fn add_ice_remote_candidate(&mut self, candidate_value: &str) -> Result<()> {
         let candidate: Candidate = unmarshal_candidate(candidate_value)?;
 
+        // With host-owned mDNS, the unresolved candidate is deliberately not
+        // inserted. The host supplies its stable observation independently.
+        if !candidate.address().ends_with(".local")
+            || self.setting_engine.multicast_dns.mode != ice::mdns::MulticastDnsMode::Disabled
+        {
+            self.register_ice_remote_candidate(&candidate);
+        }
+        self.ice_transport_mut().add_remote_candidate(candidate)?;
+        Ok(())
+    }
+
+    pub(super) fn register_ice_remote_candidate(&mut self, candidate: &Candidate) {
         // Register remote candidate with stats accumulator
         // Per W3C spec, URL must NOT be present for remote candidates
-        let rtc_candidate: RTCIceCandidate = (&candidate).into();
+        let rtc_candidate: RTCIceCandidate = candidate.into();
         let candidate_id = format!("RTCRemoteIceCandidate_{}", rtc_candidate.id);
         let (ufrag, _) = self.ice_transport().get_remote_user_credentials();
         let accumulator = self.candidate_to_accumulator(&rtc_candidate, ufrag, None);
         self.stats_mut()
             .register_remote_candidate(candidate_id, accumulator);
-
-        self.ice_transport_mut().add_remote_candidate(candidate)?;
-        Ok(())
     }
 
     pub(super) fn add_ice_local_candidate(

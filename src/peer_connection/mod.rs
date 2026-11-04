@@ -314,6 +314,9 @@ use ::sdp::description::session::Origin;
 use ::sdp::util::ConnectionRole;
 use ice::AgentConfig;
 use ice::candidate::{Candidate, unmarshal_candidate};
+
+#[cfg(test)]
+mod host_mdns_test;
 use interceptor::{Interceptor, Registry};
 use shared::error::{Error, Result};
 use shared::util::math_rand_alpha;
@@ -1751,6 +1754,29 @@ impl RTCPeerConnection {
             self.add_ice_remote_candidate(candidate_value)?;
         }
 
+        Ok(())
+    }
+
+    /// Add a host-resolved remote mDNS candidate without replacing its signaled
+    /// name or ID. This does not perform DNS or grant network access: the host
+    /// owns name validation, interface policy, resolution and cancellation.
+    ///
+    /// # Errors
+    /// Fails without a remote description or for an invalid/non-mDNS candidate
+    /// or unusable resolved address. Local relay pairs are excluded by ICE.
+    pub fn add_resolved_remote_candidate(
+        &mut self,
+        remote_candidate: crate::peer_connection::transport::RTCIceCandidate,
+        address: std::net::IpAddr,
+    ) -> Result<()> {
+        if self.remote_description().is_none() {
+            return Err(Error::ErrNoRemoteDescription);
+        }
+        let mut candidate = remote_candidate.to_ice()?;
+        candidate.set_ip(&address)?;
+        self.ice_transport_mut()
+            .add_resolved_remote_candidate(candidate.clone(), address)?;
+        self.register_ice_remote_candidate(&candidate);
         Ok(())
     }
 
