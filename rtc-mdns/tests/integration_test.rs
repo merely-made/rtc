@@ -10,6 +10,49 @@ use shared::{TaggedBytesMut, TransportContext, TransportProtocol};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 
+#[test]
+fn bounded_registration_answers_existing_client_without_network_io() {
+    use rtc_mdns::responder::{Responder, ResponderConfig};
+    use std::net::SocketAddrV4;
+
+    let now = Instant::now();
+    let address = Ipv4Addr::new(192, 0, 2, 10);
+    let name = "53caef04-4218-4fb0-815d-f91a511bb8d2.local";
+    for port in [5353, 40001] {
+        let mut responder = Responder::new(now, name, address, ResponderConfig::default()).unwrap();
+        responder.poll_transmit(now).unwrap();
+        responder
+            .poll_transmit(now + Duration::from_secs(1))
+            .unwrap();
+        let at = now + Duration::from_secs(2);
+        let client_address = SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 20), port);
+        let mut client = Mdns::new(at, MdnsConfig::default());
+        let id = client.query_now(at, name);
+        let query = client.poll_write().unwrap();
+        responder.handle_packet(
+            at,
+            client_address,
+            rtc_mdns::MDNS_MULTICAST_IPV4,
+            &query.message,
+            Duration::from_millis(75),
+        );
+        let answer = responder.poll_transmit(at).unwrap();
+        assert_eq!(answer.destination.port(), port);
+        client
+            .handle_read(create_message(
+                at,
+                client_address.into(),
+                SocketAddrV4::new(address, 5353).into(),
+                &answer.payload,
+            ))
+            .unwrap();
+        assert!(
+            matches!(client.poll_event(), Some(MdnsEvent::QueryAnswered(got, IpAddr::V4(ip)))
+            if got == id && ip == address)
+        );
+    }
+}
+
 /// Helper to create a transport context for a message
 fn create_transport_context(local: SocketAddr, peer: SocketAddr) -> TransportContext {
     TransportContext {
