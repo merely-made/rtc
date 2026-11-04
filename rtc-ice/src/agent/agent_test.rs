@@ -3286,6 +3286,97 @@ fn applied_restart_retains_only_the_bounded_previously_nominated_path() -> Resul
 }
 
 #[test]
+fn restart_rechecks_the_known_route_with_fresh_credentials_and_no_inherited_validity() -> Result<()>
+{
+    let now = Instant::now();
+    let mut agent = Agent::new(
+        now,
+        Arc::new(AgentConfig {
+            is_controlling: true,
+            ..Default::default()
+        }),
+        test_crypto_provider(),
+    )?;
+    let candidate = |port| {
+        CandidateHostConfig {
+            base_config: CandidateConfig {
+                network: "udp".into(),
+                address: "127.0.0.1".into(),
+                port,
+                component: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+        .new_candidate_host()
+    };
+    agent.add_local_candidate(candidate(41000)?)?;
+    agent.add_remote_candidate(candidate(41001)?)?;
+    agent.set_remote_credentials("oldRemote".into(), "oldRemotePassword".into())?;
+    agent.candidate_pairs[0].state = CandidatePairState::Succeeded;
+    agent.set_selected_pair(Some(now), Some(0));
+    agent.generate_restart_credentials(String::new(), String::new())?;
+    agent.apply_restart(now, true)?;
+    assert!(agent.remote_candidates.is_empty());
+    assert!(agent.pending_binding_requests.is_empty());
+    agent.set_remote_credentials("newRemote".into(), "newRemotePassword".into())?;
+    assert_eq!(agent.remote_candidates.len(), 1);
+    assert_eq!(agent.remote_candidates[0].addr().port(), 41001);
+    assert_eq!(agent.candidate_pairs.len(), 1);
+    assert_ne!(
+        agent.candidate_pairs[0].state,
+        CandidatePairState::Succeeded
+    );
+    assert!(!agent.candidate_pairs[0].nominated);
+    assert!(agent.get_selected_pair().is_none());
+    agent.handle_timeout(now + Duration::from_millis(1))?;
+    let packet = agent
+        .poll_write()
+        .expect("fresh check uses the known route");
+    let mut check = Message {
+        raw: packet.message.to_vec(),
+        ..Default::default()
+    };
+    check.decode()?;
+    let expected = format!("newRemote:{}", agent.ufrag_pwd.local_credentials.ufrag);
+    assert_inbound_username(&check, &expected)?;
+    assert_inbound_message_integrity(
+        &mut check,
+        b"newRemotePassword",
+        test_crypto_provider().crypto(),
+    )?;
+    let response = |password: &str| -> Result<Message> {
+        let mut response = Message::new();
+        response.build(&[
+            Box::new(BINDING_SUCCESS),
+            Box::new(check.transaction_id),
+            Box::new(MessageIntegrity::new_short_term_integrity_with_provider(
+                password.to_owned(),
+                test_crypto_provider().crypto(),
+            )),
+            Box::new(FINGERPRINT),
+        ])?;
+        Ok(response)
+    };
+    let remote = packet.transport.peer_addr;
+    assert!(
+        agent
+            .handle_inbound(now, &mut response("oldRemotePassword")?, 0, remote)
+            .is_err()
+    );
+    assert_ne!(
+        agent.candidate_pairs[0].state,
+        CandidatePairState::Succeeded
+    );
+    agent.handle_inbound(now, &mut response("newRemotePassword")?, 0, remote)?;
+    assert_eq!(
+        agent.candidate_pairs[0].state,
+        CandidatePairState::Succeeded
+    );
+    Ok(())
+}
+
+#[test]
 fn restart_answers_old_consent_only_on_the_retained_route_without_refreshing_it() -> Result<()> {
     let now = Instant::now();
     let mut agent = Agent::new(

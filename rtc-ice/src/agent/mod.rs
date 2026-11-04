@@ -542,6 +542,13 @@ impl Agent {
             pwd: remote_pwd,
         });
 
+        // A restarted peer may signal only mDNS candidates or wait for our
+        // checks on the continuing route. Recheck the previously nominated
+        // address with the new credentials; no old pair validity is inherited.
+        if let Some((_, remote)) = &self.previous_pair {
+            self.add_remote_candidate(remote.clone())?;
+        }
+
         Ok(())
     }
 
