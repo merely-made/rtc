@@ -364,6 +364,16 @@ impl ControllingSelector for Agent {
             // Track request received on the candidate pair
             self.candidate_pairs[pair_index].on_request_received();
 
+            // Checks may exhaust while a restart answer is still in flight.
+            // A fresh authenticated request revives that pair for a scheduled
+            // check (RFC 8445 section 7.3.1.4), without inheriting success or
+            // nomination from the previous generation.
+            if self.candidate_pairs[pair_index].state == CandidatePairState::Failed {
+                self.candidate_pairs[pair_index].state = CandidatePairState::Waiting;
+                self.candidate_pairs[pair_index].binding_request_count = 0;
+                self.request_connectivity_check();
+            }
+
             let p = &self.candidate_pairs[pair_index];
             let nominated_pair_is_none = self.nominated_pair.is_none();
 

@@ -3377,6 +3377,97 @@ fn restart_rechecks_the_known_route_with_fresh_credentials_and_no_inherited_vali
 }
 
 #[test]
+fn restart_late_authenticated_check_retries_an_exhausted_controlling_pair() -> Result<()> {
+    let now = Instant::now();
+    let mut agent = Agent::new(
+        now,
+        Arc::new(AgentConfig {
+            is_controlling: true,
+            max_binding_requests: Some(0),
+            ..Default::default()
+        }),
+        test_crypto_provider(),
+    )?;
+    let candidate = |port| {
+        CandidateHostConfig {
+            base_config: CandidateConfig {
+                network: "udp".into(),
+                address: "127.0.0.1".into(),
+                port,
+                component: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+        .new_candidate_host()
+    };
+    agent.add_local_candidate(candidate(41000)?)?;
+    agent.add_remote_candidate(candidate(41001)?)?;
+    agent.set_remote_credentials("oldRemote".into(), "oldRemotePassword".into())?;
+    agent.candidate_pairs[0].state = CandidatePairState::Succeeded;
+    agent.set_selected_pair(Some(now), Some(0));
+    agent.generate_restart_credentials(String::new(), String::new())?;
+    agent.apply_restart(now, true)?;
+    agent.set_remote_credentials("newRemote".into(), "newRemotePassword".into())?;
+    // The remote peer has not applied our answer yet. Exhaust the outgoing
+    // checks before its first check under the fresh generation arrives.
+    agent.ping_all_candidates(now);
+    agent.ping_all_candidates(now + Duration::from_millis(1));
+    assert_eq!(agent.candidate_pairs[0].state, CandidatePairState::Failed);
+    while agent.poll_write().is_some() {}
+    let request = |password: &str| -> Result<Message> {
+        let mut message = Message::new();
+        message.build(&[
+            Box::new(BINDING_REQUEST),
+            Box::new(TransactionId::new()),
+            Box::new(Username::new(
+                ATTR_USERNAME,
+                format!("{}:newRemote", agent.ufrag_pwd.local_credentials.ufrag),
+            )),
+            Box::new(crate::attributes::control::AttrControlled(1)),
+            Box::new(MessageIntegrity::new_short_term_integrity_with_provider(
+                password.to_owned(),
+                test_crypto_provider().crypto(),
+            )),
+            Box::new(FINGERPRINT),
+        ])?;
+        Ok(message)
+    };
+    let mut wrong = request("wrongPassword")?;
+    let mut valid = request(&agent.ufrag_pwd.local_credentials.pwd)?;
+    let remote = "127.0.0.1:41001".parse().unwrap();
+    assert!(agent.handle_inbound(now, &mut wrong, 0, remote).is_err());
+    assert_eq!(agent.candidate_pairs[0].state, CandidatePairState::Failed);
+    assert!(agent.poll_write().is_none());
+    agent.handle_inbound(now, &mut valid, 0, remote)?;
+    assert_ne!(agent.candidate_pairs[0].state, CandidatePairState::Failed);
+    assert!(agent.get_selected_pair().is_none());
+    agent.handle_timeout(now + Duration::from_millis(2))?;
+    let messages: Vec<_> = std::iter::from_fn(|| agent.poll_write()).collect();
+    let mut checks = 0;
+    for packet in messages {
+        let mut message = Message {
+            raw: packet.message.to_vec(),
+            ..Default::default()
+        };
+        message.decode()?;
+        if message.typ == BINDING_REQUEST {
+            assert_inbound_message_integrity(
+                &mut message,
+                b"newRemotePassword",
+                test_crypto_provider().crypto(),
+            )?;
+            checks += 1;
+        }
+    }
+    assert_eq!(
+        checks, 1,
+        "an authenticated late request must trigger a fresh check"
+    );
+    Ok(())
+}
+
+#[test]
 fn restart_answers_old_consent_only_on_the_retained_route_without_refreshing_it() -> Result<()> {
     let now = Instant::now();
     let mut agent = Agent::new(
