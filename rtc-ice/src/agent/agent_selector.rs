@@ -54,6 +54,16 @@ trait ControlledSelector {
 }
 
 impl Agent {
+    fn restart_peer_ready(&self) -> bool {
+        // A full peer can answer our new checks before receiving our answer.
+        // Its own authenticated check proves it knows the new local password.
+        // Until then keep data on the bounded previous route, rather than
+        // nominating a new socket that cannot yet carry its SCTP acknowledgments.
+        self.previous_pair.is_none()
+            || self.remote_lite
+            || self.candidate_pairs.iter().any(|p| p.requests_received > 0)
+    }
+
     /// Whether `index` has been waiting long enough to be nominated, as of `now`.
     ///
     /// `now` is supplied by the caller rather than sampled here so that one nomination decision
@@ -81,6 +91,9 @@ impl Agent {
     }
 
     fn nominate_pair(&mut self, now: Instant) {
+        if !self.restart_peer_ready() {
+            return;
+        }
         let result = {
             let Some(remote_credentials) = &self.ufrag_pwd.remote_credentials else {
                 error!("ufrag_pwd.remote_credentials is none");
@@ -229,8 +242,9 @@ impl ControllingSelector for Agent {
         } else if nominated_pair_is_some {
             self.nominate_pair(now);
         } else {
-            let has_nominated_pair = if let Some(pair_index) = self.get_best_valid_candidate_pair()
-            {
+            let has_nominated_pair = if !self.restart_peer_ready() {
+                false
+            } else if let Some(pair_index) = self.get_best_valid_candidate_pair() {
                 let p = self.candidate_pairs[pair_index];
                 self.is_nominatable(now, p.local_index, true)
                     && self.is_nominatable(now, p.remote_index, false)

@@ -268,3 +268,84 @@ fn fresh_nomination_keeps_only_bounded_old_consent_until_mutual_credentials() {
         }
     }
 }
+
+#[test]
+fn restart_nomination_waits_for_full_peer_credentials_but_not_lite_peer_checks() {
+    for lite in [false, true] {
+        let now = Instant::now();
+        let provider = crypto::default_provider().unwrap();
+        let mut agent =
+            Agent::new(now, Arc::new(AgentConfig::default()), provider.clone()).unwrap();
+        agent.add_local_candidate(host("127.0.0.1", 40000)).unwrap();
+        agent
+            .add_remote_candidate(host("127.0.0.1", 50000))
+            .unwrap();
+        agent
+            .set_remote_credentials("oldRemote".into(), "oldRemotePassword".into())
+            .unwrap();
+        agent.candidate_pairs[0].state = CandidatePairState::Succeeded;
+        agent.set_selected_pair(Some(now), Some(0));
+        agent
+            .generate_restart_credentials(String::new(), String::new())
+            .unwrap();
+        agent.apply_restart(now, true).unwrap();
+        agent.set_role(true);
+        agent.set_remote_lite(lite);
+        agent
+            .set_remote_credentials("newRemote".into(), "newRemotePassword".into())
+            .unwrap();
+        agent
+            .add_remote_candidate(host("127.0.0.1", 50001))
+            .unwrap();
+        agent.candidate_pairs[1].state = CandidatePairState::Succeeded;
+        let check = now + Duration::from_secs(1);
+        agent.contact_candidates(check);
+        let mut nominations = 0;
+        while let Some(packet) = agent.poll_write() {
+            let mut message = Message::new();
+            message.raw = packet.message.to_vec();
+            message.decode().unwrap();
+            nominations += usize::from(message.contains(ATTR_USE_CANDIDATE));
+        }
+        assert_eq!(nominations > 0, lite);
+        assert_eq!(
+            agent.get_selected_candidate_pair().unwrap().1.addr().port(),
+            50000
+        );
+        if !lite {
+            let password = agent.ufrag_pwd.local_credentials.pwd.clone();
+            let username = format!("{}:newRemote", agent.ufrag_pwd.local_credentials.ufrag);
+            let request = |password: String| {
+                let mut message = Message::new();
+                message
+                    .build(&[
+                        Box::new(BINDING_REQUEST),
+                        Box::new(TransactionId::new()),
+                        Box::new(Username::new(ATTR_USERNAME, username.clone())),
+                        Box::new(MessageIntegrity::new_short_term_integrity_with_provider(
+                            password,
+                            provider.crypto(),
+                        )),
+                        Box::new(FINGERPRINT),
+                    ])
+                    .unwrap();
+                message
+            };
+            let fresh_route = "127.0.0.1:50001".parse().unwrap();
+            assert!(
+                agent
+                    .handle_inbound(check, &mut request("wrongPassword".into()), 0, fresh_route)
+                    .is_err()
+            );
+            agent.contact_candidates(check);
+            assert!(agent.nominated_pair.is_none());
+            while agent.poll_write().is_some() {}
+            agent
+                .handle_inbound(check, &mut request(password), 0, fresh_route)
+                .unwrap();
+            agent.contact_candidates(check);
+            assert_eq!(agent.nominated_pair, Some(1));
+            assert_eq!(agent.candidate_pairs[1].requests_received, 1);
+        }
+    }
+}

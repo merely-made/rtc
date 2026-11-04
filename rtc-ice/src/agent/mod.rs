@@ -140,6 +140,7 @@ pub struct Agent {
     pub(crate) tie_breaker: u64,
     pub(crate) is_controlling: bool,
     pub(crate) lite: bool,
+    pub(crate) remote_lite: bool,
 
     pub(crate) start_time: Instant,
 
@@ -272,6 +273,7 @@ impl Agent {
             tie_breaker,
             is_controlling: config.is_controlling,
             lite: config.lite,
+            remote_lite: false,
 
             start_time: now,
 
@@ -606,6 +608,16 @@ impl Agent {
     /// Determined by which side offered; the two agents must not agree, or nomination stalls.
     pub fn set_role(&mut self, is_controlling: bool) {
         self.is_controlling = is_controlling;
+    }
+
+    /// Records the peer's signaled ICE-lite mode. Lite peers do not send checks.
+    pub fn set_remote_lite(&mut self, lite: bool) {
+        self.remote_lite = lite;
+    }
+
+    /// Whether the peer signaled ICE-lite mode.
+    pub fn remote_lite(&self) -> bool {
+        self.remote_lite
     }
 
     /// The agent's current connection state.

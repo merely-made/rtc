@@ -96,7 +96,7 @@ impl IceTransport {
         Some(RTCIceParameters {
             username_fragment: username_fragment.to_string(),
             password: password.to_string(),
-            ice_lite: false,
+            ice_lite: self.agent.remote_lite(),
         })
     }
 
@@ -253,6 +253,7 @@ impl IceTransport {
             return Err(Error::ErrICETransportNotInNew);
         }
 
+        self.agent.set_remote_lite(remote_ice_parameters.ice_lite);
         self.agent.start_connectivity_checks(
             now,
             local_ice_role == RTCIceRole::Controlling,
@@ -332,6 +333,26 @@ mod tests {
             .expect("credentials have been applied");
         assert_eq!("remoteUfrag", params.username_fragment);
         assert_eq!("remotePasswordThatIsLongEnough", params.password);
+    }
+
+    #[test]
+    fn start_preserves_remote_lite_mode_for_restart_nomination() {
+        for lite in [false, true] {
+            let mut transport = transport();
+            transport
+                .start(
+                    Instant::now(),
+                    RTCIceRole::Controlling,
+                    RTCIceParameters {
+                        username_fragment: "remoteUfrag".into(),
+                        password: "remotePasswordThatIsLongEnough".into(),
+                        ice_lite: lite,
+                    },
+                )
+                .unwrap();
+            assert_eq!(transport.agent.remote_lite(), lite);
+            assert_eq!(transport.get_remote_parameters().unwrap().ice_lite, lite);
+        }
     }
 
     // Under required RTCP multiplexing the spec itself specifies "rtp" for a transport carrying

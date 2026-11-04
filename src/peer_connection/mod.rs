@@ -1567,6 +1567,9 @@ impl RTCPeerConnection {
 
             let (remote_ufrag, remote_pwd, candidates) =
                 extract_ice_details(parsed_remote_description)?;
+            self.ice_transport_mut()
+                .agent
+                .set_remote_lite(is_lite_set(parsed_remote_description));
 
             if is_renegotiation
                 && self
