@@ -567,7 +567,9 @@ impl Agent {
         // checks on the continuing route. Recheck the previously nominated
         // address with the new credentials; no old pair validity is inherited.
         if let Some((_, remote)) = &self.previous_pair {
-            self.add_remote_candidate(remote.clone())?;
+            // This nominated endpoint was already resolved. Passing its name
+            // through unresolved-candidate policy would discard mDNS routes.
+            self.add_remote_candidate_inner(remote.clone(), true)?;
         }
 
         Ok(())
