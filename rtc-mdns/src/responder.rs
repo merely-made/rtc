@@ -39,6 +39,10 @@ pub struct ResponderConfig {
     pub max_records: usize,
     /// Minimum interval between unicast replies, 10 ms through 1 s (default 100 ms).
     pub unicast_interval: Duration,
+    /// Prefer multicast for QU questions when port 5353 is shared with other
+    /// local responders. QU accepts multicast too; legacy replies stay unicast.
+    /// Defaults to false. Multicast pacing still applies.
+    pub multicast_qu: bool,
 }
 
 impl Default for ResponderConfig {
@@ -49,6 +53,7 @@ impl Default for ResponderConfig {
             max_questions: 4,
             max_records: 16,
             unicast_interval: Duration::from_millis(100),
+            multicast_qu: false,
         }
     }
 }
@@ -250,7 +255,7 @@ impl Responder {
             now.saturating_duration_since(last)
                 < Duration::from_secs(self.config.ttl_seconds.into()) / 4
         });
-        let target = if legacy || (qu && (probe || recent)) {
+        let target = if legacy || (!self.config.multicast_qu && qu && (probe || recent)) {
             source
         } else {
             multicast()

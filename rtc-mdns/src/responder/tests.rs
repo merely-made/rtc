@@ -6,6 +6,45 @@ const ADDRESS: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 10);
 const OTHER: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 20);
 const JITTER: Duration = Duration::from_millis(75);
 
+#[test]
+fn shared_port_qu_responses_multicast_with_pacing_but_legacy_stays_unicast() {
+    let now = Instant::now();
+    let mut r = Responder::new(
+        now,
+        NAME,
+        ADDRESS,
+        ResponderConfig {
+            multicast_qu: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    r.poll_transmit(now).unwrap();
+    r.poll_transmit(now + MULTICAST_INTERVAL).unwrap();
+    receive(
+        &mut r,
+        now + MULTICAST_INTERVAL,
+        5353,
+        &mut query(0, 0x8001),
+    );
+    assert!(r.poll_transmit(now + MULTICAST_INTERVAL).is_none());
+    assert_eq!(
+        r.poll_transmit(now + Duration::from_secs(2))
+            .unwrap()
+            .destination,
+        multicast()
+    );
+    receive(
+        &mut r,
+        now + Duration::from_secs(2),
+        40001,
+        &mut query(10, 1),
+    );
+    let tx = r.poll_transmit(now + Duration::from_secs(2)).unwrap();
+    assert_eq!(tx.destination.port(), 40001);
+    assert_eq!(unpack(&tx).header.id, 10);
+}
+
 fn responder(now: Instant) -> Responder {
     Responder::new(now, NAME, ADDRESS, ResponderConfig::default()).unwrap()
 }
