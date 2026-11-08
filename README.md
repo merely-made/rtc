@@ -1,12 +1,12 @@
-Merely maintenance fork for the shared Murm RTC provider and Genet's receiving
+Merely maintenance fork for Genet's RTC provider (`genet-rtc`, moved from Murm as `murm-rtc` on 2026-11-08) and its receiving
 gates. Based on upstream `70901c3df6ad92dcb87d97af3d1e2fa8a2e2ae38`, it retains
 the nominated data path during bounded ICE restart checks and preserves the
 negotiated DTLS role when the offerer changes. An authenticated fresh-generation
 request also schedules a new check when the controlling pair exhausted its
 checks before the remote peer applied the answer. Package names and licenses retain
 their upstream identity. Consumer qualification and open boundaries live in
-`murm/wire/crates/rtc/README.md` and
-`genet/design_docs/2026-11-01_webrtc_conformance_plan.md`.
+`genet/components/genet-rtc/README.md` and
+`genet/design_docs/2026-11-04_webrtc_mdns_plan.md`.
 
 <h1 align="center">
  <a href="https://webrtc.rs"><img src="https://raw.githubusercontent.com/webrtc-rs/webrtc-rs.github.io/master/res/rtc.png" alt="WebRTC.rs"></a>
