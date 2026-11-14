@@ -1,9 +1,12 @@
 Merely maintenance fork for Genet's RTC provider (`genet-rtc`, moved from Murm as `murm-rtc` on 2026-11-08) and its receiving
-gates. Based on upstream `70901c3df6ad92dcb87d97af3d1e2fa8a2e2ae38`, it retains
-the nominated data path during bounded ICE restart checks and preserves the
-negotiated DTLS role when the offerer changes. An authenticated fresh-generation
-request also schedules a new check when the controlling pair exhausted its
-checks before the remote peer applied the answer. Package names and licenses retain
+gates. Merged with upstream master `0fbcaa74d41c90c00bf89f6389484205be467a17`
+on 2026-11-14, it retains the nominated data path during bounded ICE restart
+checks, waits for the peer's authenticated new credentials before nominating,
+keeps bounded old consent and mDNS relay exclusion across a restart, preserves
+the negotiated DTLS role when the offerer changes, and adds a bounded mDNS
+registration responder. Upstream now re-checks an exhausted pair when an
+authenticated request arrives (#317), which this fork previously carried.
+DTLS, SRTP and crypto code is upstream's unchanged. Package names and licenses retain
 their upstream identity. Consumer qualification and open boundaries live in
 `genet/components/genet-rtc/README.md` and
 `genet/design_docs/2026-11-04_webrtc_mdns_plan.md`.
