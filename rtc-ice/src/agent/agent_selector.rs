@@ -378,14 +378,17 @@ impl ControllingSelector for Agent {
             // Track request received on the candidate pair
             self.candidate_pairs[pair_index].on_request_received();
 
-            // Checks may exhaust while a restart answer is still in flight.
-            // A fresh authenticated request revives that pair for a scheduled
-            // check (RFC 8445 section 7.3.1.4), without inheriting success or
-            // nomination from the previous generation.
-            if self.candidate_pairs[pair_index].state == CandidatePairState::Failed {
-                self.candidate_pairs[pair_index].state = CandidatePairState::Waiting;
-                self.candidate_pairs[pair_index].binding_request_count = 0;
-                self.request_connectivity_check();
+            // RFC 8445 §7.3.1.4: a Binding request on a pair that is not yet Succeeded
+            // triggers a check on it, including a pair that had been marked Failed.
+            let p = &mut self.candidate_pairs[pair_index];
+            if p.state != CandidatePairState::Succeeded {
+                if p.state == CandidatePairState::Failed {
+                    // Restart the retransmission budget so the next tick does not re-fail it.
+                    p.binding_request_count = 0;
+                }
+                p.state = CandidatePairState::InProgress;
+                trace!("controllingSelector: triggered check on {}", p);
+                self.ping_candidate(now, local_index, remote_index);
             }
 
             let p = &self.candidate_pairs[pair_index];

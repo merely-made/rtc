@@ -18,7 +18,7 @@ use crate::chunk::{
     chunk_payload_data::ChunkPayloadData,
     chunk_payload_data::{MessageId, MessageReliability, PayloadProtocolIdentifier},
     chunk_reconfig::ChunkReconfig,
-    chunk_selective_ack::ChunkSelectiveAck,
+    chunk_selective_ack::{ChunkSelectiveAck, SELECTIVE_ACK_HEADER_SIZE},
     chunk_shutdown::ChunkShutdown,
     chunk_shutdown_ack::ChunkShutdownAck,
     chunk_shutdown_complete::ChunkShutdownComplete,
@@ -198,7 +198,7 @@ pub struct Association {
 
     pub(crate) payload_queue: PayloadQueue,
     inflight_queue: PayloadQueue,
-    pending_queue: PendingQueue,
+    pub(crate) pending_queue: PendingQueue,
     control_queue: VecDeque<Packet>,
     stream_queue: VecDeque<u16>,
 
@@ -401,6 +401,7 @@ impl Association {
 
             rto_mgr: RtoManager::new(),
             timers: TimerTable::new(config.timer_config()),
+            pending_queue: PendingQueue::with_scheduler(config.stream_scheduler()),
 
             mtu,
             cwnd,
@@ -1377,7 +1378,14 @@ impl Association {
                     let unblocks_reassembly =
                         d.tsn == self.peer_last_tsn.wrapping_add(1) && !self.has_readable_data();
 
-                    if fills_gap || unblocks_reassembly {
+                    // Either kind may take the receiver past `max_receive_buffer_size`, which
+                    // is what lets a message larger than the buffer be reassembled at all. But
+                    // the headroom this needs is one message, so neither kind is taken past
+                    // one `max_message_size` beyond the buffer.
+                    let within_headroom = self.bytes_in_reassembly_queues() + d.user_data.len()
+                        <= self.max_receive_buffer_size as usize + self.max_message_size as usize;
+
+                    if (fills_gap || unblocks_reassembly) && within_headroom {
                         debug!(
                             "[{}] receive buffer full, but accepted {} with tsn={} ssn={}",
                             self.side,
@@ -1403,9 +1411,12 @@ impl Association {
                 debug!("[{}] discard {}", self.side, d.stream_sequence_number);
                 return Ok(vec![]);
             }
+        } else {
+            self.payload_queue.record_duplicate(d.tsn);
         }
 
-        let immediate_sack = d.immediate_sack;
+        // RFC 9260 section 6.2: a repeat is listed in a SACK sent at once.
+        let immediate_sack = d.immediate_sack || !can_push;
 
         if stream_handle_data && let Some(s) = self.streams.get_mut(&d.stream_identifier) {
             self.events.push_back(Event::DatagramReceived);
@@ -2243,12 +2254,15 @@ impl Association {
             .any(|s| s.reassembly_queue.is_readable())
     }
 
-    pub(crate) fn get_my_receiver_window_credit(&self) -> u32 {
-        let mut bytes_queued = 0;
-        for s in self.streams.values() {
-            bytes_queued += s.get_num_bytes_in_reassembly_queue() as u32;
-        }
+    fn bytes_in_reassembly_queues(&self) -> usize {
+        self.streams
+            .values()
+            .map(|s| s.get_num_bytes_in_reassembly_queue())
+            .sum()
+    }
 
+    pub(crate) fn get_my_receiver_window_credit(&self) -> u32 {
+        let bytes_queued = u32::try_from(self.bytes_in_reassembly_queues()).unwrap_or(u32::MAX);
         self.max_receive_buffer_size.saturating_sub(bytes_queued)
     }
 
@@ -3119,12 +3133,20 @@ impl Association {
         rsn
     }
 
+    /// Builds the SACK, keeping the gap blocks nearest the cumulative TSN and then the repeats
+    /// that fit, so the packet carrying it stays within the MTU.
     fn create_selective_ack_chunk(&mut self) -> ChunkSelectiveAck {
+        let fixed = COMMON_HEADER_SIZE as usize + CHUNK_HEADER_SIZE + SELECTIVE_ACK_HEADER_SIZE;
+        let room = (self.mtu as usize).saturating_sub(fixed) / 4;
+        let mut gap_ack_blocks = self.payload_queue.get_gap_ack_blocks(self.peer_last_tsn);
+        gap_ack_blocks.truncate(room);
+        let mut duplicate_tsn = self.payload_queue.pop_duplicates();
+        duplicate_tsn.truncate(room - gap_ack_blocks.len());
         ChunkSelectiveAck {
             cumulative_tsn_ack: self.peer_last_tsn,
             advertised_receiver_window_credit: self.get_my_receiver_window_credit(),
-            gap_ack_blocks: self.payload_queue.get_gap_ack_blocks(self.peer_last_tsn),
-            duplicate_tsn: self.payload_queue.pop_duplicates(),
+            gap_ack_blocks,
+            duplicate_tsn,
         }
     }
 
